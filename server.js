@@ -34,6 +34,15 @@ app.get('/api/stream',auth,async(req,res)=>{
   for(let n of PIPED)try{const r=await fetch(`${n}/streams/${id}`,{signal:AbortSignal.timeout(3500)});if(r.ok){const d=await r.json();const s=(d.videoStreams||[]).filter(x=>!x.videoOnly&&x.format==='MPEG_4').sort((a,b)=>Math.abs((parseInt(a.quality)||720)-parseInt(q))-Math.abs((parseInt(b.quality)||720)-parseInt(q)))[0];if(s&&s.url)return res.json({url:s.url});}}catch(e){}
   res.status(404).json({error:'No stream'});
 });
+
+// API ใหม่สำหรับใช้ดึงไฟล์ดาวน์โหลดโดยเฉพาะ
+app.get('/api/download',auth,async(req,res)=>{
+  const id=req.query.id; const type=req.query.type||'mp4'; if(!id) return res.status(400).json({error:'Missing id'});
+  for(let n of COBALT)try{const r=await fetch(n,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({url:`https://youtu.be/${id}`,vQuality:'720',isAudioOnly:type==='mp3'}),signal:AbortSignal.timeout(4000)});if(r.ok){const d=await r.json();if(d.url)return res.json({url:d.url});}}catch(e){}
+  for(let n of PIPED)try{const r=await fetch(`${n}/streams/${id}`,{signal:AbortSignal.timeout(3500)});if(r.ok){const d=await r.json();let s=null;if(type==='mp4')s=(d.videoStreams||[]).find(x=>!x.videoOnly&&x.format==='MPEG_4');else s=(d.audioStreams||[]).find(x=>x.format==='M4A'||x.format==='WEBMA_OPUS');if(s&&s.url)return res.json({url:s.url});}}catch(e){}
+  res.status(404).json({error:'Failed'});
+});
+
 app.get('/api/proxy-stream',auth,async(req,res)=>{
   try{const u=req.query.url,h={'User-Agent':'Mozilla/5.0'}; if(req.headers.range)h['Range']=req.headers.range; const r=await fetch(u,{headers:h}); res.status(r.status); ['content-type','content-length','content-range','accept-ranges'].forEach(k=>{const v=r.headers.get(k); if(v)res.setHeader(k,v);}); if(r.body)Readable.fromWeb(r.body).pipe(res); else res.end();}catch(e){res.status(500).end();}
 });

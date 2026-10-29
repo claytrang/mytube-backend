@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const YouTube = require('youtube-sr').default; // เปลี่ยนมาใช้ youtube-sr
 const { Readable } = require('stream');
 
 const app = express();
@@ -51,40 +50,12 @@ app.post('/api/playlists', requireAuth, async (req, res) => {
   }
 });
 
-// >>> ระบบค้นหาอัปเกรดใหม่ ดึงข้อมูลข้ามหน้าให้ครบ 50 คลิปอัตโนมัติ <<<
-app.get('/api/search', requireAuth, async (req, res) => {
-  try {
-    const query = req.query.q;
-    if (!query) return res.status(400).json({ error: 'Missing query' });
-
-    const searchResults = await YouTube.search(query, { limit: 50, type: "video" });
-    
-    const videos = searchResults.map(v => ({
-      videoId: v.id,
-      title: v.title,
-      author: v.channel.name,
-      duration: v.durationFormatted,
-      seconds: Math.floor(v.duration / 1000),
-      thumbnail: v.thumbnail && v.thumbnail.url ? v.thumbnail.url : `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`
-    }));
-
-    res.json({ results: videos });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-const COBALT_NODES = [
-  'https://api.cobalt.tools',
-  'https://cobalt-api.kwiatekmiki.com',
-  'https://cobalt.api.timelessnesses.me'
-];
-
+// โหนดสาธารณะสำหรับค้นหาและดึงวิดีโอ
 const PIPED_NODES = [
   'https://pipedapi.kavin.rocks',
   'https://pipedapi.tokhmi.xyz',
-  'https://pipedapi.syncpundit.io',
-  'https://api.piped.projectsegfau.lt'
+  'https://api.piped.projectsegfau.lt',
+  'https://pipedapi.syncpundit.io'
 ];
 
 const INVIDIOUS_NODES = [
@@ -94,6 +65,92 @@ const INVIDIOUS_NODES = [
   'https://yewtu.be'
 ];
 
+const COBALT_NODES = [
+  'https://api.cobalt.tools',
+  'https://cobalt-api.kwiatekmiki.com',
+  'https://cobalt.api.timelessnesses.me'
+];
+
+// >>> ระบบค้นหาใหม่ (ดึงผ่าน Public API ไม่พึ่งไลบรารี ไม่ติดลิมิต) <<<
+app.get('/api/search', requireAuth, async (req, res) => {
+  try {
+    const query = req.query.q;
+    if (!query) return res.status(400).json({ error: 'Missing query' });
+
+    let searchResults = null;
+    
+    // ด่านที่ 1: ลองค้นหาผ่าน Piped API
+    for (const node of PIPED_NODES) {
+      try {
+        const r = await fetch(`${node}/search?q=${encodeURIComponent(query)}&filter=videos`, {
+          signal: AbortSignal.timeout(5000)
+        });
+        if (r.ok) {
+          const data = await r.json();
+          if (data.items && data.items.length > 0) {
+            searchResults = data.items.filter(item => item.type === 'stream');
+            break;
+          }
+        }
+      } catch (e) {}
+    }
+
+    // ด่านที่ 2: หาก Piped ล่ม ลองผ่าน Invidious API
+    if (!searchResults) {
+      for (const node of INVIDIOUS_NODES) {
+        try {
+          const r = await fetch(`${node}/api/v1/search?q=${encodeURIComponent(query)}&type=video`, {
+            signal: AbortSignal.timeout(5000)
+          });
+          if (r.ok) {
+            const data = await r.json();
+            if (data && data.length > 0) {
+              searchResults = data; 
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (!searchResults || searchResults.length === 0) {
+      return res.status(500).json({ error: 'เซิร์ฟเวอร์ค้นหาขัดข้องชั่วคราว กรุณาลองใหม่' });
+    }
+
+    // จัดรูปแบบผลลัพธ์ส่งกลับไปให้หน้าเว็บ
+    const videos = searchResults.map(v => {
+      let videoId = v.videoId;
+      if (!videoId && v.url) videoId = v.url.split('v=')[1]; 
+      
+      let sec = v.duration || v.lengthSeconds || 0;
+      let durationFormatted = "0:00";
+      if (sec > 0) {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        durationFormatted = `${m}:${s < 10 ? '0' : ''}${s}`;
+      }
+
+      let thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      if (v.thumbnail) thumb = typeof v.thumbnail === 'string' ? v.thumbnail : v.thumbnail.url;
+      if (v.videoThumbnails && v.videoThumbnails.length > 0) thumb = v.videoThumbnails[0].url;
+
+      return {
+        videoId: videoId,
+        title: v.title,
+        author: v.uploaderName || v.author || "YouTube",
+        duration: durationFormatted,
+        seconds: sec,
+        thumbnail: thumb
+      };
+    });
+
+    res.json({ results: videos });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ระบบสกัด Direct MP4 Stream
 app.get('/api/stream', requireAuth, async (req, res) => {
   const videoId = req.query.id;
   if (!videoId) return res.status(400).json({ error: 'Missing videoId' });

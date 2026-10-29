@@ -28,10 +28,10 @@ app.get('/api/search',auth,async(req,res)=>{
 
 const COBALT=['https://api.cobalt.tools','https://cobalt-api.kwiatekmiki.com'], INVIDIOUS=['https://inv.tux.pizza','https://inv.nadeko.net'], PIPED=['https://pipedapi.kavin.rocks','https://pipedapi.tokhmi.xyz'];
 app.get('/api/stream',auth,async(req,res)=>{
-  const id=req.query.id; if(!id) return res.status(400).json({error:'Missing id'});
-  for(let n of COBALT)try{const r=await fetch(n,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({url:`https://youtu.be/${id}`,vQuality:'720'}),signal:AbortSignal.timeout(4000)});if(r.ok){const d=await r.json();if(d.url)return res.json({url:d.url});}}catch(e){}
-  for(let n of INVIDIOUS)try{const r=await fetch(`${n}/api/v1/videos/${id}`,{signal:AbortSignal.timeout(3500)});if(r.ok){const d=await r.json();const f=(d.formatStreams||[]).find(x=>x.container==='mp4');if(f&&f.url)return res.json({url:f.url});}}catch(e){}
-  for(let n of PIPED)try{const r=await fetch(`${n}/streams/${id}`,{signal:AbortSignal.timeout(3500)});if(r.ok){const d=await r.json();const s=(d.videoStreams||[]).find(x=>!x.videoOnly&&x.format==='MPEG_4');if(s&&s.url)return res.json({url:s.url});}}catch(e){}
+  const id=req.query.id; const q=req.query.quality||'720'; if(!id) return res.status(400).json({error:'Missing id'});
+  for(let n of COBALT)try{const r=await fetch(n,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({url:`https://youtu.be/${id}`,vQuality:q}),signal:AbortSignal.timeout(4000)});if(r.ok){const d=await r.json();if(d.url)return res.json({url:d.url});}}catch(e){}
+  for(let n of INVIDIOUS)try{const r=await fetch(`${n}/api/v1/videos/${id}`,{signal:AbortSignal.timeout(3500)});if(r.ok){const d=await r.json();const f=(d.formatStreams||[]).filter(x=>x.container==='mp4').sort((a,b)=>Math.abs((parseInt(a.resolution)||720)-parseInt(q))-Math.abs((parseInt(b.resolution)||720)-parseInt(q)))[0];if(f&&f.url)return res.json({url:f.url});}}catch(e){}
+  for(let n of PIPED)try{const r=await fetch(`${n}/streams/${id}`,{signal:AbortSignal.timeout(3500)});if(r.ok){const d=await r.json();const s=(d.videoStreams||[]).filter(x=>!x.videoOnly&&x.format==='MPEG_4').sort((a,b)=>Math.abs((parseInt(a.quality)||720)-parseInt(q))-Math.abs((parseInt(b.quality)||720)-parseInt(q)))[0];if(s&&s.url)return res.json({url:s.url});}}catch(e){}
   res.status(404).json({error:'No stream'});
 });
 app.get('/api/proxy-stream',auth,async(req,res)=>{

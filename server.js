@@ -1,20 +1,18 @@
 const express = require('express');
 const cors = require('cors');
-const yts = require('yt-search');
+const YouTube = require('youtube-sr').default; // เปลี่ยนมาใช้ youtube-sr
 const { Readable } = require('stream');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ดึงค่าความลับจาก Environment Variables บน Render เท่านั้น (ไม่แสดงใน GitHub)
+// ดึงค่าความลับจาก Environment Variables บน Render
 const GAS_URL = process.env.GAS_URL;
 const APP_PASSWORD = process.env.APP_PASSWORD;
 
-// สำหรับ Cron-job.org เรียกปลุกเซิร์ฟเวอร์
 app.get('/ping', (req, res) => res.status(200).send('Awake'));
 
-// ตรวจสอบรหัสผ่าน (รองรับทั้ง Header และ Query สำหรับ Stream Proxy)
 function requireAuth(req, res, next) {
   const pass = req.headers['x-app-password'] || req.query.pass;
   if (!APP_PASSWORD || pass !== APP_PASSWORD) {
@@ -23,7 +21,6 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// 1. ตรวจสอบรหัสผ่านตอนเข้าเว็บ
 app.post('/api/auth', (req, res) => {
   if (APP_PASSWORD && req.body.password === APP_PASSWORD) {
     return res.json({ status: 'ok' });
@@ -31,7 +28,6 @@ app.post('/api/auth', (req, res) => {
   res.status(401).json({ error: 'Invalid password' });
 });
 
-// 2. Proxy ซ่อน Google Apps Script (ดึง Playlist)
 app.get('/api/playlists', requireAuth, async (req, res) => {
   try {
     const response = await fetch(GAS_URL);
@@ -42,7 +38,6 @@ app.get('/api/playlists', requireAuth, async (req, res) => {
   }
 });
 
-// 3. Proxy ซ่อน Google Apps Script (บันทึก/แก้ไข Playlist)
 app.post('/api/playlists', requireAuth, async (req, res) => {
   try {
     const response = await fetch(GAS_URL, {
@@ -56,20 +51,23 @@ app.post('/api/playlists', requireAuth, async (req, res) => {
   }
 });
 
-// 4. ค้นหาวิดีโอสูงสุดทั้งหมด
+// >>> อัปเกรดระบบค้นหา (ดึงข้ามหน้าให้ครบ 50 คลิปอัตโนมัติ) <<<
 app.get('/api/search', requireAuth, async (req, res) => {
   try {
     const query = req.query.q;
     if (!query) return res.status(400).json({ error: 'Missing query' });
 
-    const r = await yts(query);
-    const videos = r.videos.map(v => ({
-      videoId: v.videoId,
+    // สั่งให้ youtube-sr ค้นหาสูงสุด 50 รายการ (กรองเฉพาะวิดีโอ)
+    const searchResults = await YouTube.search(query, { limit: 50, type: "video" });
+    
+    // แปลงผลลัพธ์ให้ตรงกับ Format เดิมที่หน้าเว็บคาดหวัง
+    const videos = searchResults.map(v => ({
+      videoId: v.id,
       title: v.title,
-      author: v.author.name,
-      duration: v.timestamp,
-      seconds: v.seconds,
-      thumbnail: v.thumbnail
+      author: v.channel.name,
+      duration: v.durationFormatted,
+      seconds: Math.floor(v.duration / 1000), // แปลง ms เป็นวินาที
+      thumbnail: v.thumbnail && v.thumbnail.url ? v.thumbnail.url : `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`
     }));
 
     res.json({ results: videos });
@@ -78,7 +76,7 @@ app.get('/api/search', requireAuth, async (req, res) => {
   }
 });
 
-// 5. ระบบสกัด Direct MP4 Stream หลายช่องทาง (ไร้โฆษณา 100%)
+// ระบบสกัด Direct MP4 Stream (ไร้โฆษณา 100%)
 const COBALT_NODES = [
   'https://api.cobalt.tools',
   'https://cobalt-api.kwiatekmiki.com',
@@ -104,55 +102,39 @@ app.get('/api/stream', requireAuth, async (req, res) => {
   if (!videoId) return res.status(400).json({ error: 'Missing videoId' });
   const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-  // ชั้นที่ 1: Cobalt API (เสถียรและไม่ติดบล็อกโฆษณา)
   for (const node of COBALT_NODES) {
     try {
       const r = await fetch(`${node}/`, {
         method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: ytUrl, vQuality: '720' }),
         signal: AbortSignal.timeout(4000)
       });
       if (r.ok) {
         const data = await r.json();
-        if (data.url) {
-          return res.json({ url: data.url, source: 'cobalt-direct' });
-        }
+        if (data.url) return res.json({ url: data.url, source: 'cobalt-direct' });
       }
     } catch (e) {}
   }
 
-  // ชั้นที่ 2: Invidious API
   for (const node of INVIDIOUS_NODES) {
     try {
-      const r = await fetch(`${node}/api/v1/videos/${videoId}`, {
-        signal: AbortSignal.timeout(3500)
-      });
+      const r = await fetch(`${node}/api/v1/videos/${videoId}`, { signal: AbortSignal.timeout(3500) });
       if (r.ok) {
         const data = await r.json();
         const fmt = (data.formatStreams || []).find(f => f.container === 'mp4');
-        if (fmt && fmt.url) {
-          return res.json({ url: fmt.url, source: 'invidious-direct', proxyNode: node });
-        }
+        if (fmt && fmt.url) return res.json({ url: fmt.url, source: 'invidious-direct', proxyNode: node });
       }
     } catch (e) {}
   }
 
-  // ชั้นที่ 3: Piped API
   for (const node of PIPED_NODES) {
     try {
-      const r = await fetch(`${node}/streams/${videoId}`, {
-        signal: AbortSignal.timeout(3500)
-      });
+      const r = await fetch(`${node}/streams/${videoId}`, { signal: AbortSignal.timeout(3500) });
       if (r.ok) {
         const data = await r.json();
         const stream = (data.videoStreams || []).find(s => !s.videoOnly && s.format === 'MPEG_4');
-        if (stream && stream.url) {
-          return res.json({ url: stream.url, source: 'piped-direct' });
-        }
+        if (stream && stream.url) return res.json({ url: stream.url, source: 'piped-direct' });
       }
     } catch (e) {}
   }
@@ -160,7 +142,6 @@ app.get('/api/stream', requireAuth, async (req, res) => {
   res.status(404).json({ error: 'No direct stream available' });
 });
 
-// 6. ท่อส่งวิดีโอตรง (Stream Proxy) แก้ปัญหาลิงก์ MP4 ติดบล็อก IP/CORS บนเบราว์เซอร์
 app.get('/api/proxy-stream', requireAuth, async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).end();

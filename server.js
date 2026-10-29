@@ -51,22 +51,20 @@ app.post('/api/playlists', requireAuth, async (req, res) => {
   }
 });
 
-// >>> อัปเกรดระบบค้นหา (ดึงข้ามหน้าให้ครบ 50 คลิปอัตโนมัติ) <<<
+// >>> ระบบค้นหาอัปเกรดใหม่ ดึงข้อมูลข้ามหน้าให้ครบ 50 คลิปอัตโนมัติ <<<
 app.get('/api/search', requireAuth, async (req, res) => {
   try {
     const query = req.query.q;
     if (!query) return res.status(400).json({ error: 'Missing query' });
 
-    // สั่งให้ youtube-sr ค้นหาสูงสุด 50 รายการ (กรองเฉพาะวิดีโอ)
     const searchResults = await YouTube.search(query, { limit: 50, type: "video" });
     
-    // แปลงผลลัพธ์ให้ตรงกับ Format เดิมที่หน้าเว็บคาดหวัง
     const videos = searchResults.map(v => ({
       videoId: v.id,
       title: v.title,
       author: v.channel.name,
       duration: v.durationFormatted,
-      seconds: Math.floor(v.duration / 1000), // แปลง ms เป็นวินาที
+      seconds: Math.floor(v.duration / 1000),
       thumbnail: v.thumbnail && v.thumbnail.url ? v.thumbnail.url : `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`
     }));
 
@@ -76,7 +74,6 @@ app.get('/api/search', requireAuth, async (req, res) => {
   }
 });
 
-// ระบบสกัด Direct MP4 Stream (ไร้โฆษณา 100%)
 const COBALT_NODES = [
   'https://api.cobalt.tools',
   'https://cobalt-api.kwiatekmiki.com',
